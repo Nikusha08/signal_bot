@@ -11,6 +11,7 @@ Telegram Pump/Dump Signal Bot
 """
 
 import asyncio
+import os
 import logging
 import time
 import requests
@@ -20,8 +21,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram import Update
 
 # ===================== НАСТРОЙКИ =====================
-TELEGRAM_TOKEN = "8632205026:AAGLQAWPUr3rp493CMJMcTin54Rky1-FNt0"
-CHAT_ID = "926173043"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+CHAT_ID = os.environ.get("CHAT_ID", "")
 
 # Пары для мониторинга (можно добавить свои)
 SYMBOLS = [
