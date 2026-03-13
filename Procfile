@@ -1,1 +1,1 @@
-worker: python pump_dump_bot.py
+worker: python bot.py
