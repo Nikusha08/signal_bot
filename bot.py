@@ -1,9 +1,9 @@
 """
-Bot Futures Signals v7.0  —  PREMIUM DESIGN
+Bot Futures Signals v8.0  —  PREMIUM DESIGN
 """
 
-import os, asyncio, logging, time, random
-from datetime import datetime
+import os, asyncio, logging, time
+from datetime import datetime, timezone, timedelta
 import aiohttp
 from dotenv import load_dotenv
 
@@ -45,15 +45,17 @@ stats = {
     "total":0,"pump":0,"oi":0,"skipped":0,
     "best_score":0,"best_symbol":"—",
     "tp1_hits":0,"tp2_hits":0,"sl_hits":0,
-    "started": datetime.now().strftime("%H:%M %d.%m"),
+    "started": (datetime.now(timezone.utc)+timedelta(hours=TZ_OFFSET if 'TZ_OFFSET' in dir() else 4)).strftime("%H:%M %d.%m"),
 }
 COOLDOWN = 4 * 3600
 
 # ═══════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════
-def ts():    return datetime.now().strftime("%d.%m.%Y  %H:%M:%S")
-def ts_s():  return datetime.now().strftime("%H:%M:%S")
+TZ_OFFSET = int(os.getenv("TZ_HOURS", "4"))   # UTC+4 Тбилиси по умолчанию
+def now_local(): return datetime.now(timezone.utc) + timedelta(hours=TZ_OFFSET)
+def ts():    return now_local().strftime("%d.%m.%Y  %H:%M:%S")
+def ts_s():  return now_local().strftime("%H:%M:%S")
 
 def fmt_price(p):
     if p is None: return "—"
@@ -222,63 +224,98 @@ def calc_divergence(klines, lookback=20):
 
     return None, "", 0
 
+def calc_atr(klines, p=14):
+    """Average True Range — мера волатильности"""
+    if len(klines) < p+1: return 0.0
+    H = np.array([float(k[2]) for k in klines])
+    L = np.array([float(k[3]) for k in klines])
+    C = np.array([float(k[4]) for k in klines])
+    tr = np.maximum(H[1:]-L[1:],
+         np.maximum(abs(H[1:]-C[:-1]), abs(L[1:]-C[:-1])))
+    return float(np.mean(tr[-p:]))
+
+def oi_signal_type(price_chg: float, oi_chg_pct: float) -> tuple:
+    """
+    Классификация по OI + цена:
+    цена↑ + OI↑ = настоящий памп (осторожно — может продолжиться)
+    цена↑ + OI↓ = short squeeze (скоро разворот вниз)
+    цена↓ + OI↑ = открываются шорты (продолжение падения)
+    цена↓ + OI↓ = лонг ликвидации (скоро разворот вверх)
+    Возвращает: (тип, описание, бонус_к_score)
+    """
+    up = price_chg > 0
+    oi_up = oi_chg_pct > 5  # OI вырос >5%
+    oi_dn = oi_chg_pct < -5
+
+    if up and oi_up:
+        return "REAL_PUMP",  "Цена↑ + OI↑ = настоящий памп", 15
+    elif up and oi_dn:
+        return "SQUEEZE",    "Цена↑ + OI↓ = short squeeze ⚡", 20
+    elif not up and oi_up:
+        return "SHORT_OPEN", "Цена↓ + OI↑ = открытие шортов", 12
+    elif not up and oi_dn:
+        return "LONG_LIQ",   "Цена↓ + OI↓ = ликвидация лонгов ⚡", 18
+    return "NEUTRAL", "OI нейтральный", 0
+
 def calc_rev_single(klines, chg, direction):
+    """
+    Топ-4 индикатора разворота (без лишнего шума):
+    1. RSI — перекупленность/перепроданность
+    2. EMA кросс — смена тренда
+    3. Объём — подтверждение движения
+    4. RSI дивергенция — скрытый разворот
+    """
     if len(klines)<14: return 50,[]
     C=np.array([float(k[4]) for k in klines])
     H=np.array([float(k[2]) for k in klines])
     L=np.array([float(k[3]) for k in klines])
     V=np.array([float(k[5]) for k in klines])
     score,r=0,[]
+
+    # 1. RSI (вес 30)
     rsi=calc_rsi_arr(C)[-1]
     if direction=="SHORT":
-        if rsi>75:   score+=22;r.append(f"RSI {rsi:.0f}↑перекуп")
-        elif rsi>65: score+=10;r.append(f"RSI {rsi:.0f}")
+        if rsi>75:   score+=30; r.append(f"RSI {rsi:.0f} перекуп")
+        elif rsi>65: score+=15; r.append(f"RSI {rsi:.0f}")
     else:
-        if rsi<25:   score+=22;r.append(f"RSI {rsi:.0f}↓перепрод")
-        elif rsi<35: score+=10;r.append(f"RSI {rsi:.0f}")
+        if rsi<25:   score+=30; r.append(f"RSI {rsi:.0f} перепрод")
+        elif rsi<35: score+=15; r.append(f"RSI {rsi:.0f}")
+
+    # 2. EMA 9/21 кросс (вес 25)
     if len(C)>=22:
         e9,e21=calc_ema(C,9),calc_ema(C,21)
-        if direction=="SHORT" and e9[-2]>e21[-2] and e9[-1]<e21[-1]: score+=20;r.append("EMA кросс↓")
-        elif direction=="LONG" and e9[-2]<e21[-2] and e9[-1]>e21[-1]: score+=20;r.append("EMA кросс↑")
-        elif direction=="SHORT" and e9[-1]<e21[-1]: score+=8
-        elif direction=="LONG"  and e9[-1]>e21[-1]: score+=8
-    if len(C)>=28:
-        ml,sl_=calc_macd(C); hist=ml-sl_
-        if direction=="SHORT" and hist[-2]>0 and hist[-1]<0: score+=20;r.append("MACD разворот↓")
-        elif direction=="LONG" and hist[-2]<0 and hist[-1]>0: score+=20;r.append("MACD разворот↑")
-        elif direction=="SHORT" and ml[-1]<sl_[-1]: score+=7
-        elif direction=="LONG"  and ml[-1]>sl_[-1]: score+=7
-    if len(C)>=21:
-        _,ubb,lbb=calc_bollinger(C); p=C[-1]
-        if direction=="SHORT" and p>=ubb[-1]: score+=15;r.append("BB верхняя полоса")
-        elif direction=="LONG" and p<=lbb[-1]: score+=15;r.append("BB нижняя полоса")
-    if len(V)>=5:
-        av=np.mean(V[-6:-1])
+        if direction=="SHORT" and e9[-2]>e21[-2] and e9[-1]<e21[-1]:
+            score+=25; r.append("EMA9 пересёк EMA21↓")
+        elif direction=="LONG" and e9[-2]<e21[-2] and e9[-1]>e21[-1]:
+            score+=25; r.append("EMA9 пересёк EMA21↑")
+        elif direction=="SHORT" and e9[-1]<e21[-1]: score+=10
+        elif direction=="LONG"  and e9[-1]>e21[-1]: score+=10
+
+    # 3. Объём подтверждение (вес 25)
+    if len(V)>=10:
+        av=np.mean(V[-10:-1])
         if av>0:
             rv=V[-1]/av
-            if rv>2.5:  score+=14;r.append(f"Объём×{rv:.1f}")
-            elif rv>1.5: score+=7;r.append(f"Объём×{rv:.1f}")
-    lo,lc=float(klines[-1][1]),float(klines[-1][4])
-    lh,ll=float(klines[-1][2]),float(klines[-1][3])
-    body=abs(lc-lo); rng=lh-ll
-    if rng>0 and body>0:
-        if direction=="SHORT" and (lh-max(lo,lc))>body*1.5: score+=12;r.append("Пин-бар↓")
-        elif direction=="LONG" and (min(lo,lc)-ll)>body*1.5: score+=12;r.append("Пин-бар↑")
-    a=abs(chg)
-    if a>80: score+=14
-    elif a>50: score+=9
-    elif a>30: score+=5
+            if rv>3.0:   score+=25; r.append(f"Объём×{rv:.1f} 🔥")
+            elif rv>2.0: score+=18; r.append(f"Объём×{rv:.1f}")
+            elif rv>1.5: score+=10; r.append(f"Объём×{rv:.1f}")
 
-    # Дивергенция RSI — дополнительный бонус
+    # 4. RSI дивергенция (вес 20)
     div_type, div_desc, div_str = calc_divergence(klines)
     if div_type=="BULL" and direction=="LONG":
-        bonus = int(div_str * 0.25)
+        bonus = int(div_str * 0.20)
         score += bonus; r.append(div_desc)
     elif div_type=="BEAR" and direction=="SHORT":
-        bonus = int(div_str * 0.25)
+        bonus = int(div_str * 0.20)
         score += bonus; r.append(div_desc)
 
-    return min(score,100), r
+    # ATR — волатильность подтверждает движение
+    atr = calc_atr(klines)
+    if atr > 0 and len(C) > 0:
+        atr_pct = atr / C[-1] * 100
+        if atr_pct > 3.0: score += 10; r.append(f"ATR {atr_pct:.1f}%↑")
+
+    return min(score, 100), r
 
 def calc_rev_mtf(k15,k1h,k4h,chg,direction):
     s15,r15=calc_rev_single(k15,chg,direction)
@@ -480,7 +517,7 @@ def make_chart(s: dict) -> BytesIO:
              color=dir_color, fontsize=11, fontweight="bold",
              fontfamily="monospace", va="top")
     fig.text(0.01, 0.008,
-             f"Binance Futures  ·  EMA 9/21  ·  MACD  ·  Bollinger  ·  RSI  ·  {ts()}  ·  Bot v7.0",
+             f"Binance Futures  ·  EMA 9/21  ·  MACD  ·  Bollinger  ·  RSI  ·  {ts()}  ·  Bot v8.0",
              color="#2a3a5a", fontsize=6.5, va="bottom")
 
     # Цветная полоса слева по направлению
@@ -788,7 +825,7 @@ def build_caption(s: dict, ai_text: str = "") -> str:
         f"  ·  <a href='https://www.mexc.com/futures/{s['symbol']}_USDT'>Mexc</a>"
         f"  ·  <a href='https://www.bybit.com/trade/usdt/{s['symbol']}USDT'>Bybit</a>",
         f"",
-        f"<i>⏰  {ts()}  ·  Bot Futures Signals v7.0</i>",
+        f"<i>⏰  {ts()}  ·  Bot Futures Signals v8.0</i>",
     ]
 
     return "\n".join(lines)
@@ -1023,10 +1060,10 @@ async def build_vol_signal(session, t, fund_map, vol_ratio: float):
     rev_score, rev_reason, mtf = calc_rev_mtf(k15, k1h, k4h, change, direction)
 
     is_long = direction == "LONG"
-    conf  = min(int(70 + vol_ratio * 3), 96)
-    strn  = random.randint(78, 92)
+    conf  = min(int(60 + vol_ratio * 5), 95)
+    strn  = rev_score
     bonus = min(rev_score // 5, 10) + div_bonus + (5 if mtf.get("agree") else 0)
-    score = min(conf + strn - random.randint(0,3) + bonus, 195)
+    score = min(conf + strn + bonus, 195)
 
     if is_long:
         tp1 = resist[0] if resist         else price * 1.06
@@ -1037,7 +1074,7 @@ async def build_vol_signal(session, t, fund_map, vol_ratio: float):
         tp2 = support[1] if len(support)>1 else price * 0.88
         sl  = resist[0]  if resist        else price * 1.06
 
-    lp = random.randint(55, 72) if fr > 0 else random.randint(28, 45)
+    lp = min(max(int(50 + fr*100*400), 20), 80) if fr != 0 else 50
     div_info = div_desc if div_type else "—"
 
     return {
@@ -1068,7 +1105,7 @@ async def build_vol_signal(session, t, fund_map, vol_ratio: float):
         "vol_ratio":  vol_ratio,
         "div_info":   div_info,
         "funding":    f"{'+' if fr>=0 else ''}{fr*100:.4f}",
-        "oiChange":   f"+{random.randint(30,150)}%",
+        "oiChange":   f"+{vol_ratio:.1f}x объём",
         "longPct":    lp,
         "sent_at":    ts(),
     }
@@ -1087,7 +1124,7 @@ async def handle_commands(session):
             status="⏸ Пауза" if paused else "✅ Активен"
             await tg_text(session,
                 f"┌{'─'*28}┐\n"
-                f"│  🤖  <b>Bot Futures Signals v7.0</b>\n"
+                f"│  🤖  <b>Bot Futures Signals v8.0</b>\n"
                 f"└{'─'*28}┘\n\n"
                 f"🟢  Статус:      <b>{status}</b>\n"
                 f"<code>🕐  {ts()}</code>\n\n"
@@ -1186,7 +1223,7 @@ async def send_daily_top(session):
         lines.append(f"{i}.  {dc}  <b>{s['symbol']}</b>  Score <b>{s['score']}</b>  {s['change']}%")
     lines+=[
         f"","⭐  Лучший: <b>{stats['best_symbol']}</b>  Score {stats['best_score']}",
-        f"","<i>Bot Futures Signals v7.0</i>",
+        f"","<i>Bot Futures Signals v8.0</i>",
     ]
     await tg_text(session,"\n".join(lines))
     day_signals.clear()
@@ -1206,29 +1243,55 @@ async def get_klines(session, symbol, interval="1h", limit=80):
     except Exception as e:
         log.warning("klines %s %s: %s",symbol,interval,e); return []
 
+async def get_oi_change(session, symbol: str) -> float:
+    """Получаем изменение OI за последние 2 часа из Binance"""
+    try:
+        data = await fetch_json(session,
+            f"{FAPI}/futures/data/openInterestHist"
+            f"?symbol={symbol}&period=1h&limit=3")
+        if isinstance(data, list) and len(data) >= 2:
+            oi_now  = float(data[-1]["sumOpenInterest"])
+            oi_prev = float(data[0]["sumOpenInterest"])
+            if oi_prev > 0:
+                return (oi_now - oi_prev) / oi_prev * 100
+    except Exception: pass
+    return 0.0
+
 async def build_signal(session, t, fund_map, sig_type):
     symbol=t["symbol"].replace("USDT","")
     price=float(t["lastPrice"]); change=float(t["priceChangePercent"])
     vol=float(t["quoteVolume"]); trades=int(t.get("count",0))
 
+    fd  = fund_map.get(t["symbol"],{})
+    fr  = float(fd.get("lastFundingRate",0))*100
+
     if sig_type=="PUMP":
         direction="SHORT" if change>0 else "LONG"
     else:
-        fd=fund_map.get(t["symbol"],{})
-        direction="SHORT" if float(fd.get("lastFundingRate",0))>0 else "LONG"
+        direction="SHORT" if fr>0 else "LONG"
 
     is_long=direction=="LONG"
-    k15,k1h,k4h=await asyncio.gather(
+
+    # Загружаем свечи + OI параллельно
+    k15,k1h,k4h,oi_chg=await asyncio.gather(
         get_klines(session,t["symbol"],"15m",80),
         get_klines(session,t["symbol"],"1h", 80),
         get_klines(session,t["symbol"],"4h", 80),
+        get_oi_change(session, t["symbol"]),
     )
+
+    # OI классификация
+    oi_type, oi_desc, oi_bonus = oi_signal_type(change, oi_chg)
+    oi_label = f"{oi_desc} (OI {oi_chg:+.1f}%)"
+    oi_score = oi_bonus
+
     resist,support=calc_sr(k1h)
     rev_score,rev_reason,mtf=calc_rev_mtf(k15,k1h,k4h,change,direction)
 
-    conf=random.randint(85,96); strn=random.randint(83,97)
-    bonus=min(rev_score//5,10)+(5 if mtf.get("agree") else 0)
-    score=min(conf+strn-random.randint(0,5)+bonus,195)
+    bonus = min(rev_score//5,10) + (5 if mtf.get("agree") else 0)
+    score = min(rev_score*2 + oi_score + bonus, 195)
+    conf  = min(rev_score + oi_score, 100)
+    strn  = rev_score
 
     if is_long:
         tp1=resist[0]  if resist         else price*1.055
@@ -1239,20 +1302,19 @@ async def build_signal(session, t, fund_map, sig_type):
         tp2=support[1] if len(support)>1 else price*0.89
         sl =resist[0]  if resist         else price*1.065
 
-    fd=fund_map.get(t["symbol"],{}); fr=float(fd.get("lastFundingRate",0))*100
-    lp=random.randint(58,75) if fr>0 else random.randint(27,42)
+    lp = min(max(int(50 + fr * 400), 20), 80) if fr != 0 else 50
 
     return {
         "type":sig_type,"symbol":symbol,"pair":t["symbol"],
         "price":price,"change":f"{change:.1f}","vol":vol,"trades":trades,
-        "oi":vol*0.38,"dir":direction,"tf":"1H",
+        "oi_type":oi_type,"oi_chg":oi_chg,"dir":direction,"tf":"1H",
         "confidence":conf,"strength":strn,"score":score,
         "rev_score":rev_score,"rev_reason":rev_reason,"mtf_scores":mtf,
         "target1":tp1,"target2":tp2,"stop_loss":sl,
         "support":support,"resist":resist,
         "klines_1h":k1h,"klines_15m":k15,"klines_4h":k4h,
         "funding":f"{'+' if fr>=0 else ''}{fr:.4f}",
-        "oiChange":f"+{random.randint(40,180)}%",
+        "oiChange": oi_label,
         "longPct":lp,"sent_at":ts(),
     }
 
@@ -1364,7 +1426,7 @@ async def main():
 
         await tg_text(session,
             f"┌{'─'*28}┐\n"
-            f"│  🤖  <b>Bot Futures Signals v7.0</b>\n"
+            f"│  🤖  <b>Bot Futures Signals v8.0</b>\n"
             f"│       PREMIUM EDITION\n"
             f"└{'─'*28}┘\n\n"
             f"<code>🕐  {ts()}</code>\n\n"
@@ -1472,4 +1534,3 @@ async def main():
 
 if __name__=="__main__":
     asyncio.run(main())
-  
