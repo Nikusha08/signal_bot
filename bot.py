@@ -536,16 +536,31 @@ def make_chart(s: dict) -> BytesIO:
 #  TELEGRAM
 # ═══════════════════════════════════════════════════════
 async def tg_photo(session, buf, caption, chat=None):
-    d=aiohttp.FormData()
-    d.add_field("chat_id",   chat or CHAT_ID)
-    d.add_field("caption",   caption)
-    d.add_field("parse_mode","HTML")
-    d.add_field("photo",buf.read(),filename="chart.png",content_type="image/png")
-    async with session.post(f"{TG_API}/sendPhoto",data=d,
+    """Отправляем фото с коротким заголовком, потом полный текст отдельно"""
+    TG_CAPTION_LIMIT = 1020
+
+    # Короткий заголовок для фото (первые 3 строки)
+    short_cap = "\n".join(caption.split("\n")[:6])
+    if len(short_cap) > TG_CAPTION_LIMIT:
+        short_cap = short_cap[:TG_CAPTION_LIMIT]
+
+    d = aiohttp.FormData()
+    d.add_field("chat_id",    chat or CHAT_ID)
+    d.add_field("caption",    short_cap)
+    d.add_field("parse_mode", "HTML")
+    d.add_field("photo", buf.read(), filename="chart.png", content_type="image/png")
+    async with session.post(f"{TG_API}/sendPhoto", data=d,
                             timeout=aiohttp.ClientTimeout(total=30)) as r:
-        res=await r.json()
-        if not res.get("ok"): log.error("TG photo: %s",res)
-        return res.get("ok",False)
+        res = await r.json()
+        if not res.get("ok"):
+            log.error("TG photo: %s", res)
+            return False
+
+    # Полный текст отдельным сообщением
+    if len(caption) > TG_CAPTION_LIMIT:
+        await tg_text(session, caption, chat)
+
+    return True
 
 async def tg_text(session, text, chat=None):
     async with session.post(f"{TG_API}/sendMessage",
@@ -568,7 +583,7 @@ async def get_updates(session, offset=0):
 # ═══════════════════════════════════════════════════════
 #  GEMINI ИИ АНАЛИЗ
 # ═══════════════════════════════════════════════════════
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent"
 
 async def gemini_analysis(session, s: dict) -> str:
     """
