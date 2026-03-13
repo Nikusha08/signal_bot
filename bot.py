@@ -1289,7 +1289,8 @@ async def build_signal(session, t, fund_map, sig_type):
     rev_score,rev_reason,mtf=calc_rev_mtf(k15,k1h,k4h,change,direction)
 
     bonus = min(rev_score//5,10) + (5 if mtf.get("agree") else 0)
-    score = min(rev_score*2 + oi_score + bonus, 195)
+    # rev_score макс 100, oi_score макс 20, bonus макс 15 → итого макс ~195
+    score = min(int(rev_score * 1.5) + oi_score + bonus + 30, 195)
     conf  = min(rev_score + oi_score, 100)
     strn  = rev_score
 
@@ -1418,8 +1419,8 @@ async def scan(session):
 # ═══════════════════════════════════════════════════════
 async def main():
     global scan_count, paused
-    log.info("🤖 Bot v5.0 [%s]  Vol≥%sM  Trades≥%s  Score≥%s",
-             ts(),MIN_VOL_M,MIN_SCORE)
+    log.info("🤖 Bot v8.0 [%s]  Vol≥%sM  Score≥%s",
+             ts(), MIN_VOL_M, MIN_SCORE)
 
     conn=aiohttp.TCPConnector(limit=30,ttl_dns_cache=300)
     async with aiohttp.ClientSession(connector=conn) as session:
