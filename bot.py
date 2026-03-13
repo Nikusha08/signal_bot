@@ -1,5 +1,5 @@
 """
-Bot Futures Signals v8.0  —  PREMIUM DESIGN
+Bot Futures Signals v8.2  —  PREMIUM DESIGN
 """
 
 import os, asyncio, logging, time
@@ -676,171 +676,81 @@ def format_ai_block(ai_text: str) -> str:
     return "\n".join(lines)
 
 def build_caption(s: dict, ai_text: str = "") -> str:
-    is_long  = s["dir"] == "LONG"
-    change   = float(s["change"])
-    score    = s["score"]
-    rev      = s.get("rev_score", 70)
-    conf     = s["confidence"]
-    strn     = s["strength"]
-    mtf      = s.get("mtf_scores", {})
+    is_long = s["dir"] == "LONG"
+    change  = float(s["change"])
+    score   = s["score"]
+    rev     = s.get("rev_score", 70)
+    mtf     = s.get("mtf_scores", {})
     wr, wins, total = win_rate()
 
-    emoji_dir  = "🟢" if is_long else "🔴"
-    action_str = "LONG  ▲" if is_long else "SHORT  ▼"
-    rev_str    = "РАЗВОРОТ  ↑  ВВЕРХ" if is_long else "РАЗВОРОТ  ↓  ВНИЗ"
-    ch_str     = f"+{change:.1f}%" if change > 0 else f"{change:.1f}%"
-    stype_icon = "📈" if s["type"]=="PUMP" else ("⚡" if s["type"]=="OI" else "🐋")
-    stype_name = ("ПАМП / ДАМП"       if s["type"]=="PUMP"
-                  else "ОТКРЫТЫЙ ИНТЕРЕС" if s["type"]=="OI"
-                  else f"АНОМАЛЬНЫЙ ОБЪЁМ  ×{s.get('vol_ratio',0):.1f}")
-
-    tier_icon, tier_name, tier_lights = signal_tier(score)
-    stars  = score_stars(score)
+    arrow  = "▲ LONG" if is_long else "▼ SHORT"
+    ch_str = f"+{change:.1f}%" if change > 0 else f"{change:.1f}%"
     grade  = grade_badge(score)
+    stars  = score_stars(score)
+    sicon  = "📈" if s["type"]=="PUMP" else ("⚡" if s["type"]=="OI" else "🐋")
 
-    agree_line = ""
+    # MTF одной строкой
+    mtf_str = ""
     if mtf:
-        agree_icon = "✅ Все таймфреймы согласны" if mtf.get("agree") else "⚠️  Таймфреймы расходятся"
-        agree_line = f"\n{agree_icon}"
+        ok = "✅" if mtf.get("agree") else "·"
+        mtf_str = f"\n📊 MTF {ok}  15m <b>{mtf.get('15m',0)}%</b>  1h <b>{mtf.get('1h',0)}%</b>  4h <b>{mtf.get('4h',0)}%</b>"
 
-    wr_line = ""
-    if total > 0:
-        wr_line = (f"\n╔══ 📊  WIN RATE СЕССИИ ═══════╗\n"
-                   f"║  {pbar(wr)}  <b>{wr:.0f}%</b>\n"
-                   f"║  ✅ {stats['tp1_hits']+stats['tp2_hits']} побед  "
-                   f"❌ {stats['sl_hits']} стопов  из {total}\n"
-                   f"╚══════════════════════════════╝")
+    # S/R одной строкой
+    sr_parts = []
+    for lvl in s.get("support",[])[:1]: sr_parts.append(f"🟢 {fmt_price(lvl)}")
+    for lvl in s.get("resist", [])[:1]: sr_parts.append(f"🔴 {fmt_price(lvl)}")
+    sr_str = ("  ".join(sr_parts)) if sr_parts else ""
+
+    # Дивергенция
+    div_str = ""
+    if s["type"] != "VOL":
+        dt, dd, _ = calc_divergence(s.get("klines_1h", []))
+        if dt: div_str = f"\n📐 <i>{dd}</i>"
+
+    # OI строка
+    oi_str = ""
+    if s["type"] == "OI":
+        oi_str = (f"\n⚡ OI: <b>{s.get('oiChange','—')}</b>  "
+                  f"Фанд: <code>{s.get('funding','—')}%</code>  "
+                  f"L/S: <b>{s.get('longPct',50)}/{100-s.get('longPct',50)}%</b>")
+
+    # Win rate строка
+    wr_str = f"\n📊 WR: <b>{wr:.0f}%</b>  ✅{wins} ❌{stats['sl_hits']} / {total}" if total > 0 else ""
+
+    # AI вердикт — только одна строка
+    ai_str = ""
+    if ai_text and "ВЕРДИКТ:" in ai_text:
+        v = ai_text.split("ВЕРДИКТ:")[-1].strip().split("\n")[0].strip()
+        vi = "🟢" if "ВЫСОК" in v.upper() else ("🔴" if "НИЗК" in v.upper() else "🟡")
+        ai_str = f"\n🧠 Gemini: {vi} <b>{v}</b>"
 
     lines = [
-        # ── ШАПКА ──────────────────────────────────────
-        f"┌{'─'*28}┐",
-        f"│  {emoji_dir}  <b>{s['symbol']} / USDT  PERP</b>",
-        f"│  {tier_icon}  <b>{tier_name}</b>   {tier_lights}",
-        f"│  {stars}   Класс: <b>{grade}</b>   Score: <b>{score}</b>",
-        f"└{'─'*28}┘",
+        # шапка
+        f"{sicon} <b>{s['symbol']}/USDT</b>  {arrow}",
+        f"{stars}  <b>{grade}</b>  Score: <b>{score}</b>  Rev: <b>{rev}%</b>",
+        f"<code>{ts()}</code>",
         f"",
-        # ── ТИП СИГНАЛА ────────────────────────────────
-        f"<code>  {stype_icon}  {stype_name}</code>",
-        f"<code>  🕐  {ts()}</code>",
+        # цена + цели
+        f"💰 <code>{fmt_price(s['price'])}</code>  {ch_str}  Vol: <b>{fmt_vol(s['vol'])}</b>",
         f"",
-        # ── НАПРАВЛЕНИЕ ────────────────────────────────
-        f"╔══ 🎯  СИГНАЛ ════════════════╗",
-        f"║",
-        f"║   Направление:  <b>{rev_str}</b>",
-        f"║   Действие:     <b>{action_str}</b>",
-        f"║   Биржи:  <b>Binance · Mexc · Bybit</b>",
-        f"║",
-        f"╠══ 💰  ЦЕНА ══════════════════╣",
-        f"║",
-        f"║   Вход:     <code>{fmt_price(s['price'])}</code>",
-        f"║   Изм 24ч:  <b>{ch_str}</b>",
-        f"║   Объём:    <b>{fmt_vol(s['vol'])}</b>",
-        f"║   Сделок:   <b>{fmt_trades(s.get('trades', 0))}/24ч</b>",
-        f"║",
-        f"╠══ 🏹  ЦЕЛИ ══════════════════╣",
-        f"║",
-        f"║   ✅  TP1 →  <code>{fmt_price(s['target1'])}</code>",
-        f"║         <i>+{pct_diff(s['target1'], s['price']):.2f}%  от входа</i>",
-        f"║",
-        f"║   ✅  TP2 →  <code>{fmt_price(s['target2'])}</code>",
-        f"║         <i>+{pct_diff(s['target2'], s['price']):.2f}%  от входа</i>",
-        f"║",
-        f"║   🛑  SL   →  <code>{fmt_price(s['stop_loss'])}</code>",
-        f"║         <i>-{pct_diff(s['stop_loss'], s['price']):.2f}%  от входа</i>",
-        f"║",
+        f"✅ TP1  <code>{fmt_price(s['target1'])}</code>  <i>+{pct_diff(s['target1'],s['price']):.1f}%</i>",
+        f"✅ TP2  <code>{fmt_price(s['target2'])}</code>  <i>+{pct_diff(s['target2'],s['price']):.1f}%</i>",
+        f"🛑 SL   <code>{fmt_price(s['stop_loss'])}</code>  <i>-{pct_diff(s['stop_loss'],s['price']):.1f}%</i>",
     ]
 
-    # Уровни S/R
-    if s["support"] or s["resist"]:
-        lines.append(f"╠══ 📐  УРОВНИ ════════════════╣")
-        lines.append(f"║")
-        for i, lvl in enumerate(s["support"][:2]):
-            lines.append(f"║   🟢  S{i+1} Поддержка:  <code>{fmt_price(lvl)}</code>")
-        for i, lvl in enumerate(s["resist"][:2]):
-            lines.append(f"║   🔴  R{i+1} Сопротивление:  <code>{fmt_price(lvl)}</code>")
-        lines.append(f"║")
-
-    # OI блок
-    if s["type"] == "OI":
-        lines += [
-            f"╠══ ⚡  ОТКРЫТЫЙ ИНТЕРЕС ══════╣",
-            f"║",
-            f"║   💰  OI:         <b>{fmt_vol(s.get('oi', 0))}</b>",
-            f"║   📈  Изм. OI:    <b>{s.get('oiChange', '—')}</b>",
-            f"║   💸  Фандинг:    <code>{s.get('funding', '—')}%</code>",
-            f"║   ⚖️  Long/Short: <b>{s.get('longPct', 50)}% / {100 - s.get('longPct', 50)}%</b>",
-            f"║",
-        ]
-
-    # VOL-сигнал — блок аномалии
+    if sr_str:   lines.append(f"📐 {sr_str}")
+    if mtf_str:  lines.append(mtf_str)
+    if oi_str:   lines.append(oi_str)
     if s["type"] == "VOL":
-        lines += [
-            f"╠══ 🐋  АНОМАЛЬНЫЙ ОБЪЁМ ══════╣",
-            f"║",
-            f"║   📊  Объём выше среднего:  <b>×{s.get('vol_ratio',0):.1f}</b>",
-            f"║   💡  Кто-то тихо набирает позицию",
-            f"║   🔍  Дивергенция: <i>{s.get('div_info','—')}</i>",
-            f"║",
-        ]
-
-    # Мульти-таймфрейм
-    if mtf:
-        lines += [
-            f"╠══ 🕐  МУЛЬТИ-ТАЙМФРЕЙМ ═════╣",
-            f"║",
-            f"║  15m  <code>{mtf_bar(mtf.get('15m', 0))}</code>  <b>{mtf.get('15m', 0)}%</b>",
-            f"║   1h  <code>{mtf_bar(mtf.get('1h', 0))}</code>  <b>{mtf.get('1h', 0)}%</b>",
-            f"║   4h  <code>{mtf_bar(mtf.get('4h', 0))}</code>  <b>{mtf.get('4h', 0)}%</b>",
-            f"║  {agree_line}",
-            f"║",
-        ]
-
-    # Дивергенция RSI (для PUMP/OI)
-    if s["type"] != "VOL":
-        div_type, div_desc, div_str = calc_divergence(s.get("klines_1h",[]))
-        if div_type:
-            div_icon = "🟢" if div_type=="BULL" else "🔴"
-            lines += [
-                f"╠══ 📐  RSI ДИВЕРГЕНЦИЯ ═══════╣",
-                f"║",
-                f"║  {div_icon}  <b>{div_desc}</b>",
-                f"║  Сила: {pbar(div_str)}  <b>{div_str}%</b>",
-                f"║",
-            ]
+        lines.append(f"🐋 Объём ×<b>{s.get('vol_ratio',0):.1f}</b>  <i>{s.get('div_info','')}</i>")
+    if div_str:  lines.append(div_str)
+    if wr_str:   lines.append(wr_str)
+    if ai_str:   lines.append(ai_str)
 
     lines += [
-        f"╠══ 📊  АНАЛИТИКА ════════════╣",
-        f"║",
-        f"║  🔄  Разворот    {pbar(rev)}  <b>{rev}%</b>",
-        f"║      <i>{s.get('rev_reason', '—')}</i>",
-        f"║",
-        f"║  📈  Уверен.     {pbar(conf)}  <b>{conf}%</b>",
-        f"║",
-        f"║  ⚡  Сигнал      {pbar(strn)}  <b>{strn}%</b>",
-        f"║",
-        f"╚══════════════════════════════╝",
-    ]
-
-    # Win rate
-    if wr_line:
-        lines.append(wr_line)
-
-    # ИИ блок
-    ai_block = format_ai_block(ai_text)
-    if ai_block:
-        lines += ["", ai_block]
-
-    # Теги и ссылки
-    tag = "#vol_anomaly" if s["type"]=="VOL" else "#reversal"
-    lines += [
         f"",
-        f"<code>#{s['symbol']}USDT  #futures  {tag}  #binance</code>",
-        f"",
-        f"🔗  <a href='https://www.binance.com/futures/{s['symbol']}USDT'>Binance</a>"
-        f"  ·  <a href='https://www.mexc.com/futures/{s['symbol']}_USDT'>Mexc</a>"
-        f"  ·  <a href='https://www.bybit.com/trade/usdt/{s['symbol']}USDT'>Bybit</a>",
-        f"",
-        f"<i>⏰  {ts()}  ·  Bot Futures Signals v8.0</i>",
+        f"🔗 <a href='https://www.binance.com/futures/{s['symbol']}USDT'>Binance</a>"
+        f"  · <a href='https://www.bybit.com/trade/usdt/{s['symbol']}USDT'>Bybit</a>",
     ]
 
     return "\n".join(lines)
@@ -1352,22 +1262,47 @@ async def scan(session):
 
     def ok(sym): return sym not in sent_cache or now-sent_cache[sym]>COOLDOWN
 
+    # ── BTC ТРЕНД: блокируем сигналы против рынка ─────────
+    btc_trend = 0.0
+    try:
+        btc_k = await get_klines(session, "BTCUSDT", "1h", 3)
+        if len(btc_k) >= 2:
+            btc_trend = (float(btc_k[-2][4]) - float(btc_k[-2][1])) / float(btc_k[-2][1]) * 100
+    except Exception: pass
+
+    def btc_ok(direction):
+        if btc_trend < -3 and direction == "LONG":  return False
+        if btc_trend >  3 and direction == "SHORT": return False
+        return True
+
+    # ── ФИЛЬТР: памп свежий (не откатил >55%) ─────────────
+    def is_fresh(t):
+        try:
+            hi  = float(t["highPrice"]); lo = float(t["lowPrice"])
+            cur = float(t["lastPrice"]); chg = float(t["priceChangePercent"])
+            rng = hi - lo
+            if rng <= 0: return True
+            retrace = (hi - cur) / rng if chg > 0 else (cur - lo) / rng
+            return retrace < 0.55
+        except Exception: return True
+
     pumps=sorted(
         [t for t in usdt
          if abs(float(t["priceChangePercent"]))>=MIN_CHANGE
          and float(t["quoteVolume"])>=MIN_VOL_M*1_000_000
+         and is_fresh(t)
          and ok(t["symbol"])],
         key=lambda t:abs(float(t["priceChangePercent"])),reverse=True)[:8]
 
-    # Если слишком мало — ослабляем фильтры
+    # Если мало — ослабляем только порог памп, объём не трогаем
     if len(pumps) < 2:
         pumps=sorted(
             [t for t in usdt
-             if abs(float(t["priceChangePercent"]))>=MIN_CHANGE*0.6
-             and float(t["quoteVolume"])>=MIN_VOL_M*0.3*1_000_000
+             if abs(float(t["priceChangePercent"]))>=MIN_CHANGE*0.65
+             and float(t["quoteVolume"])>=MIN_VOL_M*1_000_000
              and ok(t["symbol"])],
             key=lambda t:abs(float(t["priceChangePercent"])),reverse=True)[:8]
-        if pumps: log.info("⚠️ Ослаблены фильтры — найдено %d кандидатов", len(pumps))
+        if pumps: log.info("⚠️ Ослаблен порог — найдено %d", len(pumps))
 
     ps={t["symbol"] for t in pumps}
     ois=sorted(
@@ -1378,13 +1313,22 @@ async def scan(session):
          and ok(t["symbol"])],
         key=lambda t:abs(float(fm[t["symbol"]]["lastFundingRate"])),reverse=True)[:5]
 
-    log.info("📊 Памп/Дамп: %d  |  OI: %d",len(pumps),len(ois))
+    log.info("📊 Памп/Дамп: %d  |  OI: %d  |  BTC: %+.1f%%", len(pumps), len(ois), btc_trend)
     sigs=[]
     for t in pumps:
-        try: sigs.append(await build_signal(session,t,fm,"PUMP"))
+        try:
+            direction = "SHORT" if float(t["priceChangePercent"]) > 0 else "LONG"
+            if not btc_ok(direction):
+                log.info("⛔ %s пропущен — против BTC", t["symbol"]); continue
+            sigs.append(await build_signal(session,t,fm,"PUMP"))
         except Exception as e: log.error("PUMP %s: %s",t["symbol"],e)
     for t in ois:
-        try: sigs.append(await build_signal(session,t,fm,"OI"))
+        try:
+            fr = float(fm.get(t["symbol"],{}).get("lastFundingRate",0))
+            direction = "SHORT" if fr > 0 else "LONG"
+            if not btc_ok(direction):
+                log.info("⛔ %s OI пропущен — против BTC", t["symbol"]); continue
+            sigs.append(await build_signal(session,t,fm,"OI"))
         except Exception as e: log.error("OI %s: %s",t["symbol"],e)
 
     # ── АНОМАЛЬНЫЙ ОБЪЁМ ────────────────────────────────
