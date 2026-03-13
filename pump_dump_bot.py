@@ -22,7 +22,6 @@ BOT_TOKEN  = os.getenv("BOT_TOKEN")
 CHAT_ID    = os.getenv("CHAT_ID")
 MIN_CHANGE = float(os.getenv("MIN_CHANGE", "20"))
 MIN_VOL_M  = float(os.getenv("MIN_VOL_M",  "10"))
-MIN_TRADES = int(os.getenv("MIN_TRADES",   "50000"))
 INTERVAL   = int(os.getenv("INTERVAL",     "900"))
 MIN_SCORE  = int(os.getenv("MIN_SCORE",    "150"))
 GEMINI_KEY = os.getenv("GEMINI_KEY", "")        # ← ключ от Google AI Studio
@@ -1095,8 +1094,7 @@ async def handle_commands(session):
                 f"⚙️  <b>Настройки:</b>\n"
                 f"  📊  Памп/Дамп ≥ <b>{MIN_CHANGE}%</b>\n"
                 f"  💰  Объём ≥ <b>{MIN_VOL_M}M$</b>\n"
-                f"  🔢  Сделок ≥ <b>{fmt_trades(MIN_TRADES)}/24ч</b>\n"
-                f"  ⏱  Интервал: <b>{INTERVAL//60} мин</b>\n"
+                    f"  ⏱  Интервал: <b>{INTERVAL//60} мин</b>\n"
                 f"  🏆  Мин Score: <b>{MIN_SCORE}</b>\n"
                 f"📋  /top · /stats · /winrate · /backtest · /pause · /resume",chat)
 
@@ -1280,7 +1278,7 @@ async def scan(session):
         [t for t in usdt
          if abs(float(t["priceChangePercent"]))>=MIN_CHANGE
          and float(t["quoteVolume"])>=MIN_VOL_M*1_000_000
-         and int(t.get("count",0))>=MIN_TRADES and ok(t["symbol"])],
+         and ok(t["symbol"])],
         key=lambda t:abs(float(t["priceChangePercent"])),reverse=True)[:8]
 
     # Если слишком мало — ослабляем фильтры
@@ -1297,7 +1295,6 @@ async def scan(session):
     ois=sorted(
         [t for t in usdt
          if float(t["quoteVolume"])>=MIN_VOL_M*1_000_000
-         and int(t.get("count",0))>=MIN_TRADES
          and t["symbol"] not in ps and t["symbol"] in fm
          and abs(float(fm[t["symbol"]]["lastFundingRate"]))>=0.00025
          and ok(t["symbol"])],
@@ -1360,7 +1357,7 @@ async def scan(session):
 async def main():
     global scan_count, paused
     log.info("🤖 Bot v5.0 [%s]  Vol≥%sM  Trades≥%s  Score≥%s",
-             ts(),MIN_VOL_M,MIN_TRADES,MIN_SCORE)
+             ts(),MIN_VOL_M,MIN_SCORE)
 
     conn=aiohttp.TCPConnector(limit=30,ttl_dns_cache=300)
     async with aiohttp.ClientSession(connector=conn) as session:
@@ -1374,7 +1371,6 @@ async def main():
             f"⚙️  <b>Настройки:</b>\n"
             f"  📊  Памп/Дамп ≥ <b>{MIN_CHANGE}%</b>\n"
             f"  💰  Объём ≥ <b>{MIN_VOL_M}M$</b>\n"
-            f"  🔢  Сделок ≥ <b>{fmt_trades(MIN_TRADES)}/24ч</b>\n"
             f"  ⏱  Интервал: <b>{INTERVAL//60} мин</b>\n"
             f"  🏆  Мин Score: <b>{MIN_SCORE}</b>\n"
             f"📊  EMA · MACD · Bollinger · RSI\n"
